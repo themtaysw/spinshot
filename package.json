@@ -1,0 +1,59 @@
+{
+  "name": "spinshot",
+  "productName": "Spinshot",
+  "version": "0.1.0",
+  "description": "Personal 3D device mockup studio",
+  "author": "Matej Matiasko",
+  "private": true,
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev:renderer": "vite",
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "build": "vite build",
+    "start": "npm run build && electron .",
+    "package": "vite build && electron-builder --mac dir"
+  },
+  "build": {
+    "appId": "app.spinshot.desktop",
+    "productName": "Spinshot",
+    "directories": {
+      "output": "release",
+      "buildResources": "buildResources"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "spinshot",
+        "name": "Spinshot Project",
+        "role": "Editor"
+      }
+    ],
+    "mac": {
+      "target": "dir",
+      "icon": "buildResources/icon.png",
+      "category": "public.app-category.graphics-design"
+    }
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.114.3",
+    "@react-three/fiber": "^8.17.10",
+    "jszip": "^3.10.1",
+    "mp4-muxer": "^5.2.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.169.0",
+    "zustand": "^5.0.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.3",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^26.15.3",
+    "vite": "^5.4.10",
+    "wait-on": "^8.0.1"
+  }
+}
