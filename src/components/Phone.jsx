@@ -4,8 +4,9 @@ import { useFrame } from '@react-three/fiber'
 import { useStore, FINISHES } from '../store.js'
 import { createScreenPainter, SCREEN_W, SCREEN_H } from '../lib/screenTexture.js'
 import { phoneRef, screenMedia } from '../lib/refs.js'
-import { useTimeline, syncLengthToProgram } from '../lib/timeline.js'
-import { programToSource, programLength, clipAt, defaultClips } from '../lib/clips.js'
+import { useTimeline, registerMediaDuration, renderTime } from '../lib/timeline.js'
+import { programLength, sourceAt } from '../lib/clips.js'
+import { deviceStateAt } from '../lib/scenes.js'
 
 const BODY_W = 0.72
 const BODY_H = 1.5
@@ -37,89 +38,143 @@ export default function Phone() {
   const rotX = useStore((s) => s.rotX)
   const rotY = useStore((s) => s.rotY)
   const rotZ = useStore((s) => s.rotZ)
+  const posX = useStore((s) => s.posX)
+  const posY = useStore((s) => s.posY)
+  const posZ = useStore((s) => s.posZ)
   const colors = FINISHES[finish] || FINISHES.natural
 
   const painter = useMemo(() => createScreenPainter(), [])
-  const videoRef = useRef(null)
+  const media = useStore((s) => s.media)
+  const videosRef = useRef(new Map()) // media id -> <video>
+  const stageRef = useRef(null) // scene intro/outro transform wrapper
+  const matsRef = useRef([]) // materials with their base opacity, for fades
+  const lastAlphaRef = useRef(1)
+
+  // collect materials once the phone exists (and again when the finish changes)
+  useEffect(() => {
+    const list = []
+    phoneRef.current?.traverse((o) => {
+      if (o.material) {
+        const m = o.material
+        if (m.userData.baseOpacity === undefined) {
+          m.userData.baseOpacity = m.opacity
+          m.userData.baseTransparent = m.transparent
+        }
+        list.push(m)
+      }
+    })
+    matsRef.current = list
+    lastAlphaRef.current = -1
+  }, [finish])
+
+  // scene visibility: on/off stage with intro/outro animation
+  useFrame(() => {
+    const st = deviceStateAt(useStore.getState().deviceSegs, renderTime())
+    const g = stageRef.current
+    if (!g) return
+    g.visible = st.visible && st.alpha > 0.01
+    g.position.set(st.dx, st.dy, 0)
+    g.scale.setScalar(st.scale)
+    const alpha = Math.min(1, Math.max(0, st.alpha))
+    if (Math.abs(alpha - lastAlphaRef.current) > 0.002) {
+      lastAlphaRef.current = alpha
+      for (const m of matsRef.current) {
+        if (alpha < 0.999) {
+          m.transparent = true
+          m.opacity = m.userData.baseOpacity * alpha
+        } else {
+          m.transparent = m.userData.baseTransparent
+          m.opacity = m.userData.baseOpacity
+        }
+      }
+    }
+  })
 
   useEffect(() => () => painter.dispose(), [painter])
 
+  // stills and the placeholder
   useEffect(() => {
-    let cancelled = false
-    // tear down any previous video
-    if (videoRef.current) {
-      videoRef.current.pause()
-      videoRef.current.src = ''
-      videoRef.current = null
-      screenMedia.current = null
-    }
+    if (screenType === 'video') return
     if (!screenSrc) {
       painter.drawPlaceholder()
       return
     }
-    if (screenType === 'video') {
-      const video = document.createElement('video')
-      video.muted = true
-      video.playsInline = true
-      video.src = screenSrc
-      // the screen video is driven by the timeline — fit the timeline to it
-      // (only on a fresh user drop; opening a project keeps its saved timeline)
-      const applyDuration = () => {
-        if (!isFinite(video.duration) || video.duration <= 0) return false
-        const dur = video.duration
-        const s = useStore.getState()
-        // ensure an edited program exists (fresh drop, legacy trim, or clamp a saved one)
-        let clips = s.clips.length ? s.clips : defaultClips(dur, s.videoTrim || 0)
-        clips = clips
-          .map((c) => ({ ...c, srcStart: Math.min(c.srcStart, dur), srcEnd: Math.min(c.srcEnd, dur) }))
-          .filter((c) => c.srcEnd - c.srcStart > 0.01)
-        if (!clips.length) clips = defaultClips(dur)
-        useStore.setState({ videoDur: dur, clips, videoTrim: 0 })
-        syncLengthToProgram()
-        if (s.pendingFit) {
-          useTimeline.setState({ t: 0, playing: false, selectedClip: null })
-          useStore.setState({ pendingFit: false })
-        }
-        video.currentTime = programToSource(clips, useTimeline.getState().t)
-        return true
-      }
-      video.addEventListener('loadeddata', () => {
-        if (cancelled) return
-        painter.drawVideo(video)
-        if (!applyDuration()) {
-          // WebM recordings report Infinity until seeked to the end once
-          video.addEventListener('durationchange', () => !cancelled && applyDuration(), { once: true })
-          video.currentTime = 1e101
-        }
-      })
-      videoRef.current = video
-      screenMedia.current = { videoEl: video, draw: () => painter.drawVideo(video) }
-    } else {
-      const img = new Image()
-      img.onload = () => {
-        if (!cancelled) painter.drawImage(img)
-      }
-      img.src = screenSrc
+    let cancelled = false
+    const img = new Image()
+    img.onload = () => {
+      if (!cancelled) painter.drawImage(img)
     }
+    img.src = screenSrc
     return () => {
       cancelled = true
     }
   }, [screenSrc, screenType, painter])
 
+  // one <video> per imported recording; the timeline decides which one shows
+  useEffect(() => {
+    const vids = videosRef.current
+    for (const [id, v] of vids) {
+      if (!media.find((m) => m.id === id)) {
+        v.pause()
+        v.src = ''
+        vids.delete(id)
+      }
+    }
+    for (const m of media) {
+      if (vids.has(m.id)) continue
+      const video = document.createElement('video')
+      video.muted = true
+      video.playsInline = true
+      video.src = m.src
+      const register = () => {
+        if (!isFinite(video.duration) || video.duration <= 0) return false
+        registerMediaDuration(m.id, video.duration)
+        video.currentTime = 0
+        return true
+      }
+      video.addEventListener('loadeddata', () => {
+        if (!vids.has(m.id)) return
+        if (!register()) {
+          // WebM recordings report Infinity until seeked to the end once
+          video.addEventListener('durationchange', () => vids.has(m.id) && register(), { once: true })
+          video.currentTime = 1e101
+        }
+      })
+      vids.set(m.id, video)
+    }
+    if (screenType === 'video' && !media.length) painter.drawPlaceholder()
+    screenMedia.current = media.length
+      ? {
+          videos: vids,
+          videoAt: (t) => {
+            const at = sourceAt(useStore.getState().clips, t)
+            return at ? vids.get(at.mediaId) || null : null
+          },
+          draw: (t) => {
+            const v = screenMedia.current?.videoAt(t ?? useTimeline.getState().t)
+            if (v && v.readyState >= 2) painter.drawVideo(v)
+          },
+        }
+      : null
+  }, [media, screenType, painter])
+
   // Keep the screen video locked to the timeline: play/pause with it, follow
   // scrubbing, and correct drift. (Exports seek explicitly and skip this.)
   useFrame(() => {
-    const video = videoRef.current
-    if (!video || video.readyState < 2) return
-    const { exportingVideo, clips, videoDur } = useStore.getState()
-    if (exportingVideo) return
-    // not registered yet (duration still resolving) — don't fight the setup seeks
-    if (!videoDur || !isFinite(video.duration)) return
+    const { exportingVideo, clips, media: list } = useStore.getState()
+    if (exportingVideo || !list.length || !clips.length) return
     const tl = useTimeline.getState()
-    const dur = isFinite(video.duration) ? video.duration : Infinity
-    const progLen = clips.length ? programLength(clips) : dur
-    const src = Math.min(programToSource(clips, tl.t), dur - 0.001 > 0 ? dur - 0.001 : Infinity)
-    const speed = clips.length ? clipAt(clips, tl.t)?.clip.speed || 1 : 1
+    const at = sourceAt(clips, tl.t)
+    if (!at) return
+    const video = videosRef.current.get(at.mediaId)
+    const m = list.find((x) => x.id === at.mediaId)
+    // not registered yet (duration still resolving) — don't fight the setup seeks
+    if (!video || video.readyState < 2 || !m?.dur || !isFinite(video.duration)) return
+    for (const [id, v] of videosRef.current) if (id !== at.mediaId && !v.paused) v.pause()
+    const dur = video.duration
+    const progLen = programLength(clips)
+    const src = Math.min(at.src, Math.max(0, dur - 0.001))
+    const speed = at.clip.speed || 1
     if (tl.playing && tl.t < progLen) {
       if (video.playbackRate !== speed) video.playbackRate = speed
       if (video.paused) video.play().catch(() => {})
@@ -171,11 +226,13 @@ export default function Phone() {
   ]
 
   return (
+    <group ref={stageRef}>
     <group
       ref={(g) => {
         phoneRef.current = g
       }}
       rotation={[THREE.MathUtils.degToRad(rotX), THREE.MathUtils.degToRad(rotY), THREE.MathUtils.degToRad(rotZ)]}
+      position={[posX || 0, posY || 0, posZ || 0]}
     >
       {/* Titanium frame + body */}
       <mesh geometry={bodyGeo} castShadow>
@@ -244,6 +301,7 @@ export default function Phone() {
         <boxGeometry args={[0.012, 0.1, 0.03]} />
         <meshStandardMaterial color={colors.frame} metalness={0.85} roughness={0.35} />
       </mesh>
+    </group>
     </group>
   )
 }

@@ -85,6 +85,30 @@ export function useThumbs(src) {
   return state
 }
 
+// thumbnails for several recordings at once: { [id]: state }
+export function useThumbsMap(media) {
+  const key = media.map((m) => `${m.id}:${m.src}`).join('|')
+  const [state, setState] = useState({})
+  useEffect(() => {
+    if (!media.length) {
+      setState({})
+      return
+    }
+    const entries = media.map((m) => [m.id, getEntry(m.src)])
+    const update = () => {
+      const out = {}
+      for (const [id, entry] of entries) out[id] = { thumbs: entry.thumbs.slice(), w: entry.w, h: entry.h, dur: entry.dur, done: entry.done }
+      setState(out)
+    }
+    for (const [, entry] of entries) entry.listeners.add(update)
+    update()
+    return () => {
+      for (const [, entry] of entries) entry.listeners.delete(update)
+    }
+  }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
+  return state
+}
+
 export function nearestThumb(thumbs, t) {
   if (!thumbs?.length) return null
   let best = thumbs[0]

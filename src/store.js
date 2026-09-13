@@ -21,15 +21,29 @@ export const LIGHT_PRESETS = {
 }
 
 const initialScene = {
+  projectName: 'Untitled',
+  customAspect: { w: 9, h: 16 }, // used when aspect === 'custom'
+  videoFps: 30,
   screenSrc: null,
   screenType: 'image', // 'image' | 'video'
   videoTrim: 0, // legacy (pre-clip-editor) start offset; converted into clips on load
-  clips: [], // edited program: [{ srcStart, srcEnd, speed }] — empty = whole recording
+  media: [], // imported recordings: [{ id, name, src, ext, dur, pending }] — bytes travel in the project file
+  clips: [], // edited program: [{ mediaId, srcStart, srcEnd, speed }]
+  texts: [], // text layers drawn over the render (see lib/textRender.js)
+  music: null, // { id, name, src, ext, dur, offset, trim, len, volume, fadeIn, fadeOut } — bytes travel in the project file
+  locales: [], // translated variants available: [{ code, name }] (texts carry i18n[code])
+  activeLocale: 'base', // which variant is shown/exported
+  deviceSegs: null, // null = phone always on stage; else [{ id, start, end, intro, outro, inDur, outDur }]
+  bgKeys: [], // keyed backgrounds: [{ id, t, bgType, bgColor1, bgColor2, bgImage, transition, dur }]
+  fonts: [], // imported brand fonts: [{ id, name, src, ext }] — bytes travel in the project file
   bakeTrim: true, // project save keeps only the edited video
   finish: 'natural',
   rotX: 0,
   rotY: -22,
   rotZ: 0,
+  posX: 0, // device offset in scene units (the phone is ~1.5 tall)
+  posY: 0,
+  posZ: 0,
   fov: 30,
   bgType: 'solid', // transparent | solid | gradient | image
   bgColor1: '#ffffff',
@@ -46,15 +60,26 @@ export const useStore = create((set) => ({
   ...initialScene,
   exportRes: 1080, // short side in px
   exportingVideo: false,
-  videoDur: 0, // runtime: duration of the loaded screen video
   pendingFit: false, // runtime: fit the timeline to the next loaded video (user drop, not project open)
   videoFormat: 'mp4', // 'mp4' | 'frames'
-  videoFps: 30,
+  started: false, // runtime: false shows the start screen
+  showSettings: false, // runtime: settings dialog open
+  aiBusy: '', // runtime: what Claude is doing right now ('' = idle)
   set: (patch) => set(patch),
   reset: () => set({ ...initialScene }),
 }))
 
 export const SCENE_KEYS = Object.keys(initialScene)
+
+// the sequence's aspect as { w, h, label } — presets or the custom ratio
+export function getAspect(s) {
+  if (s.aspect === 'custom') {
+    const w = Math.max(1, Number(s.customAspect?.w) || 9)
+    const h = Math.max(1, Number(s.customAspect?.h) || 16)
+    return { w, h, label: `${w}:${h}` }
+  }
+  return ASPECTS[s.aspect] || ASPECTS['4:5']
+}
 
 export function serializeScene(state, timeline) {
   const out = {}

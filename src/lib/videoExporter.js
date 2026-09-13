@@ -3,6 +3,8 @@ import { threeRef, screenMedia } from './refs.js'
 import { applySample, cycleLength } from './timeline.js'
 import { useStore } from '../store.js'
 import { programToSource } from './clips.js'
+import { compositeFrame, renderLocale } from './textRender.js'
+import { planAudioExport, encodeAudioInto } from './audio.js'
 
 export async function pickCodec(width, height, fps) {
   const candidates = ['avc1.640033', 'avc1.64002A', 'avc1.42E01E']
@@ -50,9 +52,9 @@ export function sourceTimeAt(t) {
 
 // Where the MP4 bytes go: the desktop app streams chunks straight to disk (so a
 // multi-minute 4K export never sits in RAM); the browser fallback buffers in memory.
-async function makeSink(name) {
+async function makeSink(name, filePath) {
   if (window.spinshot?.exportBegin) {
-    const res = await window.spinshot.exportBegin(name)
+    const res = filePath ? await window.spinshot.exportBeginAt(filePath) : await window.spinshot.exportBegin(name)
     if (!res || res.canceled) return null
     const id = res.id
     const inflight = new Set()
@@ -100,10 +102,11 @@ async function makeSink(name) {
 
 // Renders the timeline frame-by-frame, deterministically, and encodes via WebCodecs.
 // mode: 'mp4' writes the file (returns the sink result); 'frames' calls onFrame(dataURL, index).
-export async function exportTimeline({ width, height, fps, mode = 'mp4', name, onFrame, onProgress, shouldCancel }) {
+export async function exportTimeline({ width, height, fps, mode = 'mp4', name, filePath, onFrame, onProgress, shouldCancel }) {
   const three = threeRef.current
   if (!three) throw new Error('Renderer not ready')
   const { gl, scene, camera, setFrameloop, advance, size } = three
+  renderLocale.current = useStore.getState().activeLocale || 'base'
 
   width -= width % 2
   height -= height % 2
@@ -113,13 +116,20 @@ export async function exportTimeline({ width, height, fps, mode = 'mp4', name, o
   let muxer = null
   let encoder = null
   let sink = null
+  let audioPlan = null
   if (mode === 'mp4') {
-    sink = await makeSink(name || 'spinshot.mp4')
+    sink = await makeSink(name || 'spinshot.mp4', filePath)
     if (!sink) return { saved: false, canceled: true }
     const config = await pickCodec(width, height, fps)
+    try {
+      audioPlan = await planAudioExport(useStore.getState().music, total / fps)
+    } catch (e) {
+      console.warn('audio export skipped:', e)
+    }
     muxer = new Muxer({
       target: sink.target,
       video: { codec: 'avc', width, height },
+      ...(audioPlan ? { audio: { codec: audioPlan.mux, sampleRate: audioPlan.sampleRate, numberOfChannels: audioPlan.channels } } : {}),
       fastStart: sink.streaming ? false : 'in-memory',
       firstTimestampBehavior: 'offset',
     })
@@ -132,14 +142,15 @@ export async function exportTimeline({ width, height, fps, mode = 'mp4', name, o
 
   const prevPR = gl.getPixelRatio()
   const prevBg = scene.background
-  const video = screenMedia.current?.videoEl
+  const sm = screenMedia.current
+  const texts = useStore.getState().texts
 
   setFrameloop('never')
   gl.setPixelRatio(1)
   gl.setSize(width, height, false)
   camera.aspect = width / height
   camera.updateProjectionMatrix()
-  if (video) video.pause()
+  if (sm) for (const v of sm.videos.values()) v.pause()
 
   let ok = false
   try {
@@ -149,14 +160,16 @@ export async function exportTimeline({ width, height, fps, mode = 'mp4', name, o
       applySample(t)
       camera.aspect = width / height
       camera.updateProjectionMatrix()
+      const video = sm?.videoAt(t)
       if (video) {
         await seekVideo(video, sourceTimeAt(t))
-        screenMedia.current?.draw()
+        sm.draw(t)
       }
       advance(performance.now())
+      const src = texts.length ? compositeFrame(gl.domElement, texts, t, width, height) : gl.domElement
 
       if (mode === 'mp4') {
-        const frame = new VideoFrame(gl.domElement, {
+        const frame = new VideoFrame(src, {
           timestamp: Math.round((f * 1e6) / fps),
           duration: Math.round(1e6 / fps),
         })
@@ -165,7 +178,7 @@ export async function exportTimeline({ width, height, fps, mode = 'mp4', name, o
         while (encoder.encodeQueueSize > 4) await new Promise((r) => setTimeout(r, 5))
         await sink.drain()
       } else {
-        await onFrame(gl.domElement.toDataURL('image/png'), f)
+        await onFrame(src.toDataURL('image/png'), f)
       }
 
       onProgress?.((f + 1) / total)
@@ -174,6 +187,10 @@ export async function exportTimeline({ width, height, fps, mode = 'mp4', name, o
 
     if (mode === 'mp4') {
       await encoder.flush()
+      if (audioPlan) {
+        await encodeAudioInto(muxer, audioPlan, (p) => onProgress?.(0.97 + p * 0.03))
+        await sink.drain()
+      }
       muxer.finalize()
       ok = true
       return await sink.finish()

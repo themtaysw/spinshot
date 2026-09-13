@@ -43,17 +43,23 @@ export function programToSource(clips, t) {
   return Math.max(last.srcStart, last.srcEnd - 0.001)
 }
 
-export function defaultClips(srcDur, trim = 0) {
-  return [{ srcStart: Math.min(trim, Math.max(0, srcDur - MIN_CLIP)), srcEnd: srcDur, speed: 1 }]
+export function defaultClips(srcDur, trim = 0, mediaId) {
+  return [{ mediaId, srcStart: Math.min(trim, Math.max(0, srcDur - MIN_CLIP)), srcEnd: srcDur, speed: 1 }]
 }
 
-export function isTrivial(clips, srcDur) {
-  return (
-    clips.length === 1 &&
-    clips[0].speed === 1 &&
-    clips[0].srcStart <= 0.01 &&
-    clips[0].srcEnd >= srcDur - 0.01
-  )
+// which recording, and where in it, shows at program time t
+export function sourceAt(clips, t) {
+  const hit = clipAt(clips, t)
+  if (!hit) return null
+  return { mediaId: hit.clip.mediaId, src: programToSource(clips, t), clip: hit.clip }
+}
+
+// a single untouched recording at 1× — nothing to bake
+export function isTrivialProgram(clips, media) {
+  if (clips.length !== 1 || media.length !== 1) return false
+  const c = clips[0]
+  const dur = media[0].dur || 0
+  return c.speed === 1 && c.srcStart <= 0.01 && c.srcEnd >= dur - 0.01
 }
 
 const identity = (t) => t
@@ -130,6 +136,28 @@ export function trimClip(clips, index, edge, newT, srcDur) {
       shift < 0
         ? (t) => (t < nt ? t : t < b ? null : t + shift)
         : (t) => (t < b ? t : t + shift),
+  }
+}
+
+// Move clip `from` so it sits at position `to` among the other clips. Times
+// inside every clip travel with that clip, so keyframes stay on their footage.
+export function reorderClips(clips, from, to) {
+  const others = clips.filter((_, i) => i !== from)
+  const next = others.slice()
+  next.splice(Math.min(to, others.length), 0, clips[from])
+  if (next.every((c, i) => c === clips[i])) return { clips, remap: identity }
+  const oldStarts = clipStarts(clips)
+  const newStarts = clipStarts(next)
+  const offset = new Map()
+  clips.forEach((c, i) => offset.set(c, newStarts[next.indexOf(c)] - oldStarts[i]))
+  const total = programLength(clips)
+  return {
+    clips: next,
+    remap: (t) => {
+      if (t >= total) return t
+      const hit = clipAt(clips, t)
+      return hit ? t + offset.get(hit.clip) : t
+    },
   }
 }
 

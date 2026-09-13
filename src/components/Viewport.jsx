@@ -3,9 +3,11 @@ import * as THREE from 'three'
 import { Canvas, useThree, useFrame } from '@react-three/fiber'
 import { OrbitControls, ContactShadows, Environment, Lightformer, MeshReflectorMaterial } from '@react-three/drei'
 import Phone from './Phone.jsx'
-import { useStore, ASPECTS } from '../store.js'
-import { makeGradientTexture } from '../lib/screenTexture.js'
+import TextOverlay from './TextOverlay.jsx'
+import { useStore, getAspect } from '../store.js'
 import { threeRef, controlsRef } from '../lib/refs.js'
+import { bgAt, deviceStateAt } from '../lib/scenes.js'
+import { renderTime } from '../lib/timeline.js'
 import { useTimeline, applySample, cycleLength, autoCaptureKey } from '../lib/timeline.js'
 
 function Player() {
@@ -49,34 +51,52 @@ function ThreeCapture() {
   return null
 }
 
+// The stage background, evaluated per frame so keyed backgrounds crossfade
+// (and exports, which drive frameTime directly, get the same result).
 function Background() {
   const scene = useThree((s) => s.scene)
-  const bgType = useStore((s) => s.bgType)
-  const bgColor1 = useStore((s) => s.bgColor1)
-  const bgColor2 = useStore((s) => s.bgColor2)
-  const bgImage = useStore((s) => s.bgImage)
+  const gradRef = useRef(null)
+  const lastRef = useRef('')
+  const imgCache = useRef(new Map())
 
   useEffect(() => {
-    let disposable = null
-    if (bgType === 'transparent') {
+    const c = document.createElement('canvas')
+    c.width = 16
+    c.height = 1024
+    const tex = new THREE.CanvasTexture(c)
+    tex.colorSpace = THREE.SRGBColorSpace
+    gradRef.current = { canvas: c, ctx: c.getContext('2d'), tex }
+    lastRef.current = ''
+    return () => tex.dispose()
+  }, [])
+
+  useFrame(() => {
+    const s = useStore.getState()
+    const b = bgAt(s.bgKeys, renderTime(), s)
+    const key = `${b.bgType}|${b.c1}|${b.c2}|${b.bgImage || ''}`
+    if (key === lastRef.current || !gradRef.current) return
+    lastRef.current = key
+    if (b.bgType === 'transparent') {
       scene.background = null
-    } else if (bgType === 'solid') {
-      scene.background = new THREE.Color(bgColor1)
-    } else if (bgType === 'gradient') {
-      disposable = makeGradientTexture(bgColor1, bgColor2)
-      scene.background = disposable
-    } else if (bgType === 'image' && bgImage) {
-      const tex = new THREE.TextureLoader().load(bgImage)
-      tex.colorSpace = THREE.SRGBColorSpace
-      disposable = tex
+    } else if (b.bgType === 'image' && b.bgImage) {
+      let tex = imgCache.current.get(b.bgImage)
+      if (!tex) {
+        tex = new THREE.TextureLoader().load(b.bgImage)
+        tex.colorSpace = THREE.SRGBColorSpace
+        imgCache.current.set(b.bgImage, tex)
+      }
       scene.background = tex
     } else {
-      scene.background = null
+      const { canvas, ctx, tex } = gradRef.current
+      const g = ctx.createLinearGradient(0, 0, 0, canvas.height)
+      g.addColorStop(0, b.c1)
+      g.addColorStop(1, b.bgType === 'gradient' ? b.c2 : b.c1)
+      ctx.fillStyle = g
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      tex.needsUpdate = true
+      scene.background = tex
     }
-    return () => {
-      disposable?.dispose()
-    }
-  }, [scene, bgType, bgColor1, bgColor2, bgImage])
+  })
 
   return null
 }
@@ -119,6 +139,16 @@ function Floor() {
   const shadow = useStore((s) => s.shadow)
   const reflection = useStore((s) => s.reflection)
   const bgColor2 = useStore((s) => s.bgColor2)
+  const shadowRef = useRef(null)
+
+  // the contact shadow follows the phone on/off stage
+  useFrame(() => {
+    const g = shadowRef.current
+    if (!g) return
+    const st = deviceStateAt(useStore.getState().deviceSegs, renderTime())
+    g.visible = st.visible && st.alpha > 0.35
+    g.position.x = st.dx
+  })
 
   return (
     <>
@@ -140,7 +170,9 @@ function Floor() {
         </mesh>
       )}
       {shadow && (
-        <ContactShadows position={[0, -0.82, 0]} opacity={0.55} scale={5} blur={2.6} far={2} resolution={512} />
+        <group ref={shadowRef}>
+          <ContactShadows position={[0, -0.82, 0]} opacity={0.55} scale={5} blur={2.6} far={2} resolution={512} />
+        </group>
       )}
     </>
   )
@@ -148,9 +180,52 @@ function Floor() {
 
 export default function Viewport() {
   const aspect = useStore((s) => s.aspect)
+  const customAspect = useStore((s) => s.customAspect)
   const bgType = useStore((s) => s.bgType)
-  const a = ASPECTS[aspect]
+  const a = getAspect({ aspect, customAspect })
   const wrapRef = useRef(null)
+
+  // ⌥-drag moves the phone in the plane facing the camera
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const raycaster = new THREE.Raycaster()
+    const pointAt = (e, plane) => {
+      const three = threeRef.current
+      const r = el.getBoundingClientRect()
+      const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
+      raycaster.setFromCamera(ndc, three.camera)
+      const hit = new THREE.Vector3()
+      return raycaster.ray.intersectPlane(plane, hit) ? hit : null
+    }
+    const onDown = (e) => {
+      if (!e.altKey || e.button !== 0 || !threeRef.current) return
+      e.stopPropagation()
+      e.preventDefault()
+      const s = useStore.getState()
+      const p0 = new THREE.Vector3(s.posX || 0, s.posY || 0, s.posZ || 0)
+      const normal = threeRef.current.camera.getWorldDirection(new THREE.Vector3())
+      const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, p0)
+      const h0 = pointAt(e, plane)
+      if (!h0) return
+      useTimeline.setState({ playing: false })
+      const onMove = (ev) => {
+        const h = pointAt(ev, plane)
+        if (!h) return
+        const r2 = (v) => Math.round(v * 100) / 100
+        useStore.setState({ posX: r2(p0.x + h.x - h0.x), posY: r2(p0.y + h.y - h0.y), posZ: r2(p0.z + h.z - h0.z) })
+      }
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        autoCaptureKey()
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    }
+    el.addEventListener('pointerdown', onDown, true)
+    return () => el.removeEventListener('pointerdown', onDown, true)
+  }, [])
 
   return (
     <div className="viewport-outer">
@@ -180,10 +255,13 @@ export default function Viewport() {
             dampingFactor={0.08}
             minDistance={1.2}
             maxDistance={12}
+            zoomSpeed={0.35}
+            rotateSpeed={0.8}
             onEnd={() => autoCaptureKey()}
             target={[0, -0.02, 0]}
           />
         </Canvas>
+        <TextOverlay frameRef={wrapRef} />
       </div>
     </div>
   )

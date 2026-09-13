@@ -1,6 +1,9 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const fs = require('fs')
 const path = require('path')
+const ai = require('./ai.cjs')
+
+ai.register()
 
 let win
 let pendingOpenFile = null
@@ -108,6 +111,13 @@ ipcMain.handle('export-begin', async (_e, { name }) => {
   return { id, filePath }
 })
 
+// batch exports open files by path without a dialog per file
+ipcMain.handle('export-begin-at', async (_e, { filePath }) => {
+  const id = ++exportSeq
+  exports_.set(id, { fd: fs.openSync(filePath, 'w'), filePath })
+  return { id, filePath }
+})
+
 ipcMain.handle('export-write', async (_e, { id, position, bytes }) => {
   const ex = exports_.get(id)
   if (!ex) throw new Error('unknown export')
@@ -138,9 +148,9 @@ ipcMain.handle('export-abort', async (_e, { id }) => {
   return true
 })
 
-ipcMain.handle('save-project', async (_e, { bytes }) => {
+ipcMain.handle('save-project', async (_e, { bytes, name }) => {
   const { canceled, filePath } = await dialog.showSaveDialog(win, {
-    defaultPath: 'Untitled.spinshot',
+    defaultPath: name || 'Untitled.spinshot',
     filters: [{ name: 'Spinshot project', extensions: ['spinshot'] }],
   })
   if (canceled || !filePath) return { saved: false }
