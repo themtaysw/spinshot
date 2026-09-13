@@ -697,8 +697,47 @@ function TextSection({ tx: raw }) {
   )
 }
 
+// In the dockable workspace each section is its own panel: a Panel rendered
+// with `only` shows just the matching section, flat (no accordion header).
+const OnlyCtx = React.createContext(null)
+const SECTION_KEYS = {
+  Screen: 'screen',
+  Device: 'device',
+  Camera: 'camera',
+  Background: 'background',
+  Music: 'music',
+  'AI assistant': 'ai',
+  'Light & floor': 'light',
+  Export: 'export',
+  'Export video': 'exportvideo',
+  Text: 'properties',
+  'Device scene': 'properties',
+}
+export const PANEL_TITLES = {
+  properties: 'Properties',
+  screen: 'Screen',
+  device: 'Device',
+  camera: 'Camera',
+  background: 'Background',
+  music: 'Music',
+  ai: 'AI assistant',
+  light: 'Light & floor',
+  export: 'Export image',
+  exportvideo: 'Export video',
+}
+
 function Section({ title, defaultOpen = false, children }) {
+  const only = React.useContext(OnlyCtx)
   const [open, setOpen] = useState(defaultOpen)
+  if (only) {
+    if (SECTION_KEYS[title] !== only) return null
+    return (
+      <div className="dock-section">
+        {(title === 'Text' || title === 'Device scene') && <div className="dock-section-title">{title}</div>}
+        {children}
+      </div>
+    )
+  }
   return (
     <div className={`section ${open ? 'open' : 'collapsed'}`}>
       <button className="section-title" onClick={() => setOpen(!open)} aria-expanded={open}>
@@ -725,21 +764,86 @@ function Row({ label, children }) {
   )
 }
 
+// After-Effects-style property value: drag the number to scrub (⇧ = coarse,
+// ⌥ = fine), double-click to type. A hairline track shows where it sits in range.
 function Slider({ value, onChange, min, max, step = 1, suffix = '' }) {
-  // 0..1 position used by the CSS track fill
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const decimals = Math.max(0, Math.min(3, Math.ceil(-Math.log10(step || 1))))
+  const clampRound = (v) => {
+    const r = Math.round(Math.min(max, Math.max(min, v)) / step) * step
+    return Number(r.toFixed(decimals))
+  }
   const p = Math.min(1, Math.max(0, (value - min) / (max - min)))
+  const startScrub = (e, absolute) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const el = e.currentTarget
+    const track = el.closest('.scrub').querySelector('.scrub-track')
+    const startX = e.clientX
+    const startV = value
+    let moved = false
+    const apply = (ev) => {
+      const mult = ev.shiftKey ? 4 : ev.altKey ? 0.2 : 1
+      if (absolute) {
+        const r = track.getBoundingClientRect()
+        onChange(clampRound(min + ((ev.clientX - r.left) / r.width) * (max - min)))
+      } else {
+        const perPx = ((max - min) / 220) * mult
+        onChange(clampRound(startV + (ev.clientX - startX) * perPx))
+      }
+    }
+    const mv = (ev) => {
+      if (Math.abs(ev.clientX - startX) > 2) moved = true
+      if (moved) apply(ev)
+    }
+    const up = (ev) => {
+      window.removeEventListener('pointermove', mv)
+      window.removeEventListener('pointerup', up)
+      document.body.classList.remove('scrubbing')
+      if (absolute && !moved) apply(ev)
+    }
+    document.body.classList.add('scrubbing')
+    window.addEventListener('pointermove', mv)
+    window.addEventListener('pointerup', up)
+  }
+  const commit = () => {
+    const n = parseFloat(draft)
+    if (!Number.isNaN(n)) onChange(clampRound(n))
+    setEditing(false)
+  }
   return (
-    <div className="slider-wrap">
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        style={{ '--p': p }}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-      <span className="slider-val">{value}{suffix}</span>
+    <div className="scrub">
+      <div className="scrub-track" onPointerDown={(e) => startScrub(e, true)}>
+        <div className="scrub-fill" style={{ width: `${p * 100}%` }} />
+      </div>
+      {editing ? (
+        <input
+          className="scrub-input"
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit()
+            if (e.key === 'Escape') setEditing(false)
+            e.stopPropagation()
+          }}
+        />
+      ) : (
+        <span
+          className="scrub-val"
+          onPointerDown={(e) => startScrub(e, false)}
+          onDoubleClick={() => {
+            setDraft(String(value))
+            setEditing(true)
+          }}
+          title="Drag to scrub · double-click to type · ⇧ coarse · ⌥ fine"
+        >
+          {Number(value).toFixed(decimals)}
+          {suffix && <em>{suffix}</em>}
+        </span>
+      )}
     </div>
   )
 }
@@ -756,7 +860,7 @@ function Segmented({ options, value, onChange }) {
   )
 }
 
-export default function Panel({ width }) {
+export default function Panel({ width, only = null }) {
   const s = useStore()
   const set = s.set
   const screenInput = useRef(null)
@@ -794,7 +898,14 @@ export default function Panel({ width }) {
   const bgKeyHere = s.bgKeys.length ? bgKeyAtPlayhead() : null
 
   return (
-    <div className="panel" style={width ? { width } : undefined}>
+    <OnlyCtx.Provider value={only}>
+    <div className={`panel ${only ? 'dock' : ''}`} style={width ? { width } : undefined}>
+      {only === 'properties' && !selText && !selSeg && (
+        <div className="dock-empty">
+          <div>Nothing selected</div>
+          <div className="hint">Click a text, badge or phone segment on the timeline (or in the composition) to edit it here.</div>
+        </div>
+      )}
       {selText && <TextSection key={selText.id} tx={selText} />}
       {selSeg && <DeviceSection key={selSeg.id} seg={selSeg} />}
       <Section title="Screen">
@@ -990,6 +1101,7 @@ export default function Panel({ width }) {
 
       <VideoExport />
     </div>
+    </OnlyCtx.Provider>
   )
 }
 

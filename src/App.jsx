@@ -1,10 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
-import Viewport from './components/Viewport.jsx'
-import Panel from './components/Panel.jsx'
-import Timeline from './components/Timeline.jsx'
 import AudioSync from './components/AudioSync.jsx'
 import SettingsDialog from './components/SettingsDialog.jsx'
 import StartScreen from './components/StartScreen.jsx'
+import Workspace, { PANELS, openPanel, resetWorkspace, openPanels } from './components/Workspace.jsx'
 import { useStore } from './store.js'
 import {
   useTimeline,
@@ -49,67 +47,21 @@ import { screenMedia, phoneRef, threeRef } from './lib/refs.js'
 // dev/testing hook
 if (typeof window !== 'undefined') window.__spinshotDebug = { useStore, useTimeline, screenMedia, phoneRef, threeRef }
 
-const LAYOUT_DEFAULTS = { panelW: 292, timelineH: 156 }
-const LAYOUT_LIMITS = { panelW: [230, 600], timelineH: [112, 640] }
-const clamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v))
-
-function loadLayout() {
-  try {
-    return { ...LAYOUT_DEFAULTS, ...JSON.parse(localStorage.getItem('spinshot.layout') || '{}') }
-  } catch {
-    return { ...LAYOUT_DEFAULTS }
-  }
-}
-
-// Drag handle between panes. Reports pointer position while dragging; double-click resets.
-function Resizer({ axis, onMove, onReset }) {
-  const [active, setActive] = useState(false)
-  return (
-    <div
-      className={`resizer ${axis} ${active ? 'active' : ''}`}
-      onPointerDown={(e) => {
-        if (e.button !== 0) return
-        try {
-          e.currentTarget.setPointerCapture(e.pointerId)
-        } catch {
-          /* synthetic pointer */
-        }
-        setActive(true)
-      }}
-      onPointerMove={(e) => {
-        if (e.buttons & 1) onMove(e)
-      }}
-      onPointerUp={() => setActive(false)}
-      onPointerCancel={() => setActive(false)}
-      onDoubleClick={onReset}
-      title="Drag to resize · double-click to reset"
-    />
-  )
-}
-
 export default function App() {
   const set = useStore((s) => s.set)
   const [dragging, setDragging] = useState(false)
   const sceneInput = useRef(null)
   const dragDepth = useRef(0)
   const saveSceneRef = useRef(() => {})
-  const mainRef = useRef(null)
-  const colRef = useRef(null)
-  const [layout, setLayout] = useState(loadLayout)
   const { canUndo, canRedo } = useHistoryState()
   const projectName = useStore((s) => s.projectName)
+  const [panelsMenu, setPanelsMenu] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
 
   useEffect(() => {
     initHistory()
   }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('spinshot.layout', JSON.stringify(layout))
-    } catch {
-      /* private mode etc. */
-    }
-  }, [layout])
 
   useEffect(() => {
     const onDragOver = (e) => e.preventDefault()
@@ -243,6 +195,12 @@ export default function App() {
     }
   }
 
+  // fullscreen has no traffic lights — drop the top bar inset
+  useEffect(() => {
+    if (!window.spinshot?.onFullscreen) return
+    return window.spinshot.onFullscreen((v) => document.body.classList.toggle('fullscreen', !!v))
+  }, [])
+
   // .spinshot files double-clicked in Finder arrive through the Electron shell
   useEffect(() => {
     if (!window.spinshot?.onOpenProject) return
@@ -265,7 +223,25 @@ export default function App() {
         <div className="brand">
           <span className="brand-dot" />
           <span className="brand-name">Spinshot</span>
-          <span className="project-name">{projectName}</span>
+          <span className="crumb-sep">/</span>
+          {renaming ? (
+            <input
+              className="project-rename"
+              autoFocus
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={() => { set({ projectName: nameDraft.trim() || 'Untitled' }); setRenaming(false) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key === 'Escape') setRenaming(false)
+                e.stopPropagation()
+              }}
+            />
+          ) : (
+            <button className="project-name" onClick={() => { setNameDraft(projectName); setRenaming(true) }} title="Rename the sequence">
+              {projectName}
+            </button>
+          )}
         </div>
         <div className="topbar-actions">
           <button
@@ -292,6 +268,25 @@ export default function App() {
               <path d="M13 7.5H6.5a3.5 3.5 0 0 0 0 7H8" />
             </svg>
           </button>
+          <span className="topbar-sep" />
+          <div className="menu-wrap">
+            <button className="btn ghost" onClick={() => setPanelsMenu((v) => !v)} title="Show, hide and reset workspace panels">
+              Window
+              <svg viewBox="0 0 8 5" width="8" height="5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M1 1l3 3 3-3" /></svg>
+            </button>
+            {panelsMenu && (
+              <div className="menu" onPointerLeave={() => setPanelsMenu(false)}>
+                {Object.entries(PANELS).map(([id, name]) => (
+                  <button key={id} className="menu-item" onClick={() => { openPanel(id); setPanelsMenu(false) }}>
+                    <span className="menu-check">{openPanels().has(id) ? '✓' : ''}</span>
+                    {name}
+                  </button>
+                ))}
+                <div className="menu-sep" />
+                <button className="menu-item" onClick={() => { resetWorkspace(); setPanelsMenu(false) }}>Reset workspace</button>
+              </div>
+            )}
+          </div>
           <span className="topbar-sep" />
           <button className="btn ghost icon-only" onClick={() => set({ showSettings: true })} title="Settings (Claude API key, model)">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -328,28 +323,8 @@ export default function App() {
           />
         </div>
       </div>
-      <div className="main" ref={mainRef}>
-        <div className="viewport-col" ref={colRef}>
-          <Viewport />
-          <Resizer
-            axis="y"
-            onMove={(e) => {
-              const bottom = colRef.current.getBoundingClientRect().bottom
-              setLayout((l) => ({ ...l, timelineH: clamp(bottom - e.clientY, LAYOUT_LIMITS.timelineH) }))
-            }}
-            onReset={() => setLayout((l) => ({ ...l, timelineH: LAYOUT_DEFAULTS.timelineH }))}
-          />
-          <Timeline height={layout.timelineH} />
-        </div>
-        <Resizer
-          axis="x"
-          onMove={(e) => {
-            const right = mainRef.current.getBoundingClientRect().right
-            setLayout((l) => ({ ...l, panelW: clamp(right - e.clientX, LAYOUT_LIMITS.panelW) }))
-          }}
-          onReset={() => setLayout((l) => ({ ...l, panelW: LAYOUT_DEFAULTS.panelW }))}
-        />
-        <Panel width={layout.panelW} />
+      <div className="main">
+        <Workspace />
       </div>
       {dragging && (
         <div className="drop-overlay">

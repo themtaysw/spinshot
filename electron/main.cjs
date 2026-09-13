@@ -41,11 +41,15 @@ function createWindow() {
   }
 
   win.webContents.on('did-finish-load', () => {
+    win.webContents.send('fullscreen', win.isFullScreen())
     if (pendingOpenFile) {
       win.webContents.send('open-project', pendingOpenFile)
       pendingOpenFile = null
     }
   })
+  // the traffic-light inset in the top bar only makes sense when they're visible
+  win.on('enter-full-screen', () => win.webContents.send('fullscreen', true))
+  win.on('leave-full-screen', () => win.webContents.send('fullscreen', false))
 }
 
 app.whenReady().then(() => {

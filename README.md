@@ -89,9 +89,11 @@ Callouts (Text section → Callout): give any text a **Pill** or **Card** backgr
 
 **⌘Z** / **⇧⌘Z** (or the arrows in the top bar) step through every edit — scene settings, keyframes, clip edits, text layers. Slider drags and typing bursts count as one step; playback and scrubbing are never recorded.
 
-## Layout
+## Workspace
 
-Drag the divider above the timeline to change its height (the video lane and its thumbnails grow with it), and the divider left of the sidebar to change its width. Double-click a divider to reset. Sizes are remembered between launches.
+Spinshot uses an After Effects-style dockable workspace. Every surface is a tab — Project, Composition, Timeline, Properties (the selected text / phone segment), AI assistant, Device, Camera, Background, Light & floor, Screen, Music, Export image, Export video. Drag a tab by its header to dock it anywhere (an overlay shows where it lands), drop it onto another tab strip to group them, drag the dividers to resize, double-click a tab strip to maximize. Closed panels come back from the **Window** menu in the top bar, which also has **Reset workspace**. The layout is remembered between launches.
+
+Property values are After Effects-style: **drag the number** to scrub (⇧ coarse, ⌥ fine), **double-click** to type, or click/drag the hairline track.
 
 ## Keyboard shortcuts
 

@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld('spinshot', {
   exportEnd: (id) => ipcRenderer.invoke('export-end', { id }),
   exportAbort: (id) => ipcRenderer.invoke('export-abort', { id }),
   readFile: (filePath) => ipcRenderer.invoke('read-file', { filePath }),
+  onFullscreen: (cb) => {
+    const handler = (_e, v) => cb(v)
+    ipcRenderer.on('fullscreen', handler)
+    return () => ipcRenderer.removeListener('fullscreen', handler)
+  },
   onOpenProject: (cb) => {
     const handler = (_e, p) => cb(p)
     ipcRenderer.on('open-project', handler)

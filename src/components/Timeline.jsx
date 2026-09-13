@@ -48,7 +48,7 @@ function chooseStep(pps) {
   return 600
 }
 
-export default function Timeline({ height }) {
+export default function Timeline() {
   const tl = useTimeline()
   const exportingVideo = useStore((s) => s.exportingVideo)
   const clips = useStore((s) => s.clips)
@@ -355,7 +355,7 @@ export default function Timeline({ height }) {
   const zoomSlider = (Math.log2(tl.zoom) / ZOOM_LOG) * 100
 
   return (
-    <div className={`timeline ${exportingVideo ? 'disabled' : ''}`} style={height ? { height } : undefined}>
+    <div className={`timeline ${exportingVideo ? 'disabled' : ''}`}>
       <div className="tl-toolbar">
         <div className="tl-group">
           <button className="btn ghost play" onClick={togglePlay} title="Play / pause (space)">
